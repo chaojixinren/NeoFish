@@ -104,6 +104,10 @@ npm run dev
 NeoFish 欢迎任何形式的贡献！无论你是想修复 Bug、添加新功能，还是改进文档，都非常欢迎提交 Pull Request。
 
 
+## ⭐ Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=LangQi99/NeoFish&type=Date)](https://star-history.com/#LangQi99/NeoFish&Date)
+
 ---
 <div align="center">
   <sub>Built with ❤️ by LangQi99 & the Open Source Community.</sub>
