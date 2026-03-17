@@ -231,7 +231,7 @@ TOOLS = [
     },
     {
         "name": "run_bash",
-        "description": "Execute a shell command. Blocks until completion with timeout (default 120s). Dangerous commands are blocked.",
+        "description": "Execute a shell command. Blocks until completion with timeout (default 120s). Dangerous commands are blocked. You can use python code execution for complex logic.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -436,7 +436,8 @@ async def run_agent_loop(
     ws_request_action,
     ws_send_image,
     images: list = [],
-    history_messages: list = []
+    history_messages: list = [],
+    uploaded_files: list = []
 ):
     await ws_send_msg({
         "message": f"Agent starting task: {user_instruction}",
@@ -448,16 +449,35 @@ async def run_agent_loop(
     max_steps = 100
     is_finished = False
 
-    # First user message: handle images if provided
+    # Build first user message with context about uploaded files
+    context_parts = []
+
+    # Add uploaded file paths to context
+    if uploaded_files:
+        context_parts.append(
+            f"The user has uploaded {len(uploaded_files)} file(s) which have been saved to:\n" +
+            "\n".join(f"  - {path}" for path in uploaded_files) +
+            "\n\nYou can use read_file, edit_file, or other file tools to work with these files."
+        )
+
+    # Handle images (base64 for LLM vision)
     if images:
+        context_parts.append(
+            f"The user has attached {len(images)} image(s) directly to their request. "
+            "Please examine each image carefully first."
+        )
+
+    # Build the full user content
+    if context_parts:
         user_content = [{
             "type": "text",
-            "text": (
-                f"The user has attached {len(images)} image(s) directly to their request. "
-                "Please examine each image carefully first, then complete the task below.\n\n"
-                f"Task: {user_instruction}"
-            )
+            "text": "\n\n".join(context_parts) + f"\n\nTask: {user_instruction}"
         }]
+    else:
+        user_content = [{"type": "text", "text": f"Please execute this task: {user_instruction}"}]
+
+    # Add images as base64 for vision
+    if images:
         for data_url in images:
             try:
                 header, b64_data = data_url.split(",", 1)
@@ -468,12 +488,6 @@ async def run_agent_loop(
                 })
             except Exception as e:
                 print(f"Failed to parse image data-URL: {e}")
-        user_content.append({
-            "type": "text",
-            "text": "The images above were provided by the user. Answer based on them directly if the task is about image content. Only browse the web if the task explicitly requires it."
-        })
-    else:
-        user_content = [{"type": "text", "text": f"Please execute this task: {user_instruction}"}]
 
     for step in range(max_steps):
         # Check for proactive takeover request

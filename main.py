@@ -4,6 +4,7 @@ load_dotenv()
 import json
 import uuid
 import asyncio
+import base64
 from datetime import datetime
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -11,11 +12,17 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
+import os
 
 from playwright_manager import PlaywrightManager
 from agent import run_agent_loop
 
 pm = PlaywrightManager()
+
+# Workspace for user uploads
+WORKSPACE_DIR = Path(os.getenv("WORKDIR", "./workspace")).resolve()
+UPLOADS_DIR = WORKSPACE_DIR / "uploads"
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Prefixes used to tag assistant messages that carry structured data.
 # Keep this list in sync with the matching stripping logic in the WS handler.
@@ -269,6 +276,29 @@ async def websocket_endpoint(websocket: WebSocket):
             elif msg_type == "user_input":
                 user_msg = payload.get("message", "")
                 user_images = payload.get("images", [])  # list of base64 data-URLs
+
+                # Save uploaded images to workspace and collect paths
+                saved_paths = []
+                for i, data_url in enumerate(user_images):
+                    try:
+                        # Parse data URL: data:image/png;base64,xxxx
+                        header, b64_data = data_url.split(",", 1)
+                        media_type = header.split(":")[1].split(";")[0]  # e.g. image/png
+                        ext = media_type.split("/")[1] if "/" in media_type else "bin"
+                        ext = ext.replace("+xml", "")  # handle svg+xml -> svg
+
+                        # Generate unique filename
+                        filename = f"upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{i}.{ext}"
+                        filepath = UPLOADS_DIR / filename
+
+                        # Decode and save
+                        file_bytes = base64.b64decode(b64_data)
+                        filepath.write_bytes(file_bytes)
+
+                        saved_paths.append(str(filepath))
+                    except Exception as e:
+                        print(f"Failed to save uploaded image: {e}")
+
                 _append_message("user", user_msg, images=user_images)
 
                 # Build conversation history from session messages
@@ -298,7 +328,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     _append_message("assistant", human_text)
                     await websocket.send_text(json.dumps(packet))
 
-                asyncio.create_task(run_agent_loop(pm, user_msg, ws_send_msg, request_human_action, send_image, images=user_images, history_messages=history_messages))
+                asyncio.create_task(run_agent_loop(
+                    pm, user_msg, ws_send_msg, request_human_action, send_image,
+                    images=user_images,
+                    history_messages=history_messages,
+                    uploaded_files=saved_paths
+                ))
 
     except WebSocketDisconnect:
         print(f"WebSocket client disconnected (session: {session_id})")
