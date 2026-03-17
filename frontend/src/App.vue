@@ -55,6 +55,14 @@ const messages = ref<any[]>([])
 const hasStarted = ref(false)
 const scrollContainer = ref<HTMLElement | null>(null)
 
+/** Check if user is near the bottom of the scroll container */
+function isNearBottom(): boolean {
+  if (!scrollContainer.value) return true
+  const { scrollTop, scrollHeight, clientHeight } = scrollContainer.value
+  // Consider "near bottom" if within 100px of the bottom
+  return scrollTop + clientHeight >= scrollHeight - 100
+}
+
 function scrollToBottom() {
   nextTick(() => {
     if (scrollContainer.value) {
@@ -63,7 +71,14 @@ function scrollToBottom() {
   })
 }
 
-watch(messages, scrollToBottom, { deep: true })
+/** Scroll to bottom only if user is already near the bottom */
+function scrollToBottomIfNearBottom() {
+  if (isNearBottom()) {
+    scrollToBottom()
+  }
+}
+
+watch(messages, scrollToBottomIfNearBottom, { deep: true })
 
 function pushMessage(data: any) {
   messages.value.push(data)
@@ -137,6 +152,8 @@ function handleUserSubmit(payload: { text: string; images: string[] }) {
   const { text, images } = payload
   hasStarted.value = true
   pushMessage({ type: 'user', message: text, images })
+  // Always scroll to bottom when user sends a message
+  scrollToBottom()
   if (ws.value && isConnected.value) {
     ws.value.send(JSON.stringify({ type: 'user_input', message: text, images }))
   }
