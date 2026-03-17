@@ -179,6 +179,37 @@ class QQAdapter(PlatformAdapter):
             "message": messages,
         })
 
+    async def send_file(
+        self,
+        session_id: str,
+        file_path: str,
+        description: str = "",
+    ) -> None:
+        """Send a file to the QQ user."""
+        target = self._session_store.get_chat_id("qq", session_id)
+        if target is None:
+            logger.warning("send_file: no QQ chat mapped to session %s", session_id)
+            return
+
+        msg_type, chat_id = _parse_target(target)
+        messages: list = []
+
+        if description:
+            messages.append({"type": "text", "data": {"text": description}})
+
+        # OneBot v11 file segment - using file:// URL
+        # NapCat supports sending files via URL or base64
+        messages.append({
+            "type": "file",
+            "data": {"file": f"file://{file_path}"}
+        })
+
+        await self._call_api("send_msg", {
+            "message_type": msg_type,
+            "group_id" if msg_type == _MSG_TYPE_GROUP else "user_id": int(chat_id),
+            "message": messages,
+        })
+
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     async def _listen_loop(self) -> None:
@@ -262,10 +293,32 @@ class QQAdapter(PlatformAdapter):
         attachments = []
         if isinstance(raw_message, list):
             for seg in raw_message:
-                if seg.get("type") == "image":
-                    url = seg.get("data", {}).get("url") or seg.get("data", {}).get("file", "")
+                seg_type = seg.get("type")
+                seg_data = seg.get("data", {})
+
+                if seg_type == "image":
+                    url = seg_data.get("url") or seg_data.get("file", "")
                     if url:
                         attachments.append((f"qq_image.jpg", url))
+
+                elif seg_type == "file":
+                    # File attachment
+                    file_url = seg_data.get("url") or seg_data.get("file", "")
+                    filename = seg_data.get("name", "qq_file")
+                    if file_url:
+                        attachments.append((filename, file_url))
+
+                elif seg_type == "video":
+                    # Video attachment
+                    video_url = seg_data.get("url") or seg_data.get("file", "")
+                    if video_url:
+                        attachments.append(("qq_video.mp4", video_url))
+
+                elif seg_type == "record":
+                    # Voice/audio attachment
+                    audio_url = seg_data.get("url") or seg_data.get("file", "")
+                    if audio_url:
+                        attachments.append(("qq_audio.mp3", audio_url))
 
         unified = UnifiedMessage(
             platform="qq",

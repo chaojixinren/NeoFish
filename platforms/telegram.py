@@ -153,6 +153,45 @@ class TelegramAdapter(PlatformAdapter):
         if image:
             await self._send_image_to_chat(chat_id, image)
 
+    async def send_file(
+        self,
+        session_id: str,
+        file_path: str,
+        description: str = "",
+    ) -> None:
+        """Send a file to the Telegram user."""
+        import io
+
+        chat_id = self._session_store.get_chat_id("telegram", session_id)
+        if chat_id is None:
+            logger.warning("send_file: no Telegram chat mapped to session %s", session_id)
+            return
+
+        if self._app is None:
+            return
+
+        # Read the file
+        try:
+            with open(file_path, "rb") as f:
+                file_bytes = f.read()
+
+            filename = file_path.split("/")[-1]
+            buf = io.BytesIO(file_bytes)
+            buf.name = filename
+
+            # Determine file type and send accordingly
+            ext = filename.lower().split(".")[-1] if "." in filename else ""
+            if ext in ("jpg", "jpeg", "png", "gif", "webp"):
+                await self._app.bot.send_photo(chat_id=chat_id, photo=buf, caption=description)
+            elif ext in ("mp4", "mov", "avi"):
+                await self._app.bot.send_video(chat_id=chat_id, video=buf, caption=description)
+            elif ext in ("mp3", "wav", "ogg"):
+                await self._app.bot.send_audio(chat_id=chat_id, audio=buf, caption=description)
+            else:
+                await self._app.bot.send_document(chat_id=chat_id, document=buf, caption=description)
+        except Exception as e:
+            logger.error("Failed to send file to Telegram: %s", e)
+
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     async def _on_telegram_message(self, update, context) -> None:
@@ -177,15 +216,55 @@ class TelegramAdapter(PlatformAdapter):
         # get_or_create automatically stores the bidirectional mapping.
         session_id = self._session_store.get_or_create("telegram", chat_id_str)
 
-        # Collect text and photo attachments
+        # Collect text and attachments
         text = update.message.text or update.message.caption or ""
         attachments = []
+
+        # Handle photo
         if update.message.photo:
             # Telegram provides multiple sizes; pick the largest
             photo = update.message.photo[-1]
             tg_file = await context.bot.get_file(photo.file_id)
             file_bytes = await tg_file.download_as_bytearray()
             attachments.append((f"{photo.file_id}.jpg", bytes(file_bytes)))
+
+        # Handle document (files)
+        if update.message.document:
+            doc = update.message.document
+            tg_file = await context.bot.get_file(doc.file_id)
+            file_bytes = await tg_file.download_as_bytearray()
+            filename = doc.file_name or f"{doc.file_id}"
+            attachments.append((filename, bytes(file_bytes)))
+
+        # Handle video
+        if update.message.video:
+            video = update.message.video
+            tg_file = await context.bot.get_file(video.file_id)
+            file_bytes = await tg_file.download_as_bytearray()
+            filename = video.file_name or f"{video.file_id}.mp4"
+            attachments.append((filename, bytes(file_bytes)))
+
+        # Handle audio
+        if update.message.audio:
+            audio = update.message.audio
+            tg_file = await context.bot.get_file(audio.file_id)
+            file_bytes = await tg_file.download_as_bytearray()
+            filename = audio.file_name or f"{audio.file_id}.mp3"
+            attachments.append((filename, bytes(file_bytes)))
+
+        # Handle voice
+        if update.message.voice:
+            voice = update.message.voice
+            tg_file = await context.bot.get_file(voice.file_id)
+            file_bytes = await tg_file.download_as_bytearray()
+            attachments.append((f"{voice.file_id}.ogg", bytes(file_bytes)))
+
+        # Handle video note (round video messages)
+        if update.message.video_note:
+            video_note = update.message.video_note
+            tg_file = await context.bot.get_file(video_note.file_id)
+            file_bytes = await tg_file.download_as_bytearray()
+            attachments.append((f"{video_note.file_id}.mp4", bytes(file_bytes)))
 
         msg = UnifiedMessage(
             platform="telegram",

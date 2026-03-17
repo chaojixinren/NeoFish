@@ -35,6 +35,15 @@ SYSTEM_PROMPT = """You are NeoFish, an autonomous agent that can:
 2. **Manage files** - Read, write, edit files in the workspace
 3. **Execute commands** - Run shell commands (blocking or background)
 4. **Track tasks** - Create, update, and manage persistent tasks
+5. **Send files** - Send files to the user
+
+## CRITICAL: Working Directory
+Your workspace is located at: {workdir}
+- ALL file operations MUST be relative to this directory
+- When reading/writing files, use relative paths like `src/main.py` or `data/config.json`
+- The system will automatically resolve them to the correct absolute path
+- NEVER use absolute paths like `/Users/...` or `C:\\...` unless specifically required
+- If you need to check the current directory, use `run_bash` with `pwd`
 
 ## Observing the page
 You have two complementary ways to observe the current state of the page:
@@ -57,6 +66,7 @@ You have two complementary ways to observe the current state of the page:
 - Use `read_file` to read file contents
 - Use `write_file` to create or overwrite files
 - Use `edit_file` to make precise changes to existing files
+- Use `send_file` to send a file to the user (images, documents, etc.)
 - Use `run_bash` to execute shell commands (blocking, with timeout)
 - Use `background_run` for long-running commands (non-blocking)
 
@@ -74,7 +84,7 @@ For commands that take a long time:
 
 If you ever encounter a strict login wall, CAPTCHA, or require the user to scan a QR code, you must call the `request_human_assistance` tool. Do NOT give up easily; only ask for help when absolutely necessary.
 When the task is completely finished, call `finish_task`.
-"""
+""".format(workdir=WORKDIR)
 
 TOOLS = [
     # Browser tools
@@ -227,6 +237,18 @@ TOOLS = [
                 "new_text": {"type": "string", "description": "Replacement text"}
             },
             "required": ["path", "old_text", "new_text"]
+        }
+    },
+    {
+        "name": "send_file",
+        "description": "Send a file to the user. Use this to share images, documents, or any file from the workspace. The file must exist in the workspace.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path relative to workspace (e.g. 'output/report.pdf')"},
+                "description": {"type": "string", "description": "Optional description of the file"}
+            },
+            "required": ["path"]
         }
     },
     {
@@ -417,7 +439,11 @@ async def auto_compact(messages: list, focus: str = None) -> list:
             "role": "user",
             "content": (
                 f"[Conversation compressed. Full transcript: {transcript_path}]\n\n"
-                f"{summary}"
+                f"## Important Reminders:\n"
+                f"- Your workspace directory is: {WORKDIR}\n"
+                f"- ALL file operations must be relative to this directory\n"
+                f"- Use `send_file` to send files to the user\n\n"
+                f"## Summary:\n{summary}"
             )
         },
         {
@@ -435,9 +461,14 @@ async def run_agent_loop(
     ws_send_msg,
     ws_request_action,
     ws_send_image,
+    ws_send_file,
     images: list = [],
     history_messages: list = [],
-    uploaded_files: list = []
+    uploaded_files: list = [],
+    session_store = None,
+    session_id: str = None,
+    web_queue_getter = None,
+    web_session_id: str = None,
 ):
     await ws_send_msg({
         "message": f"Agent starting task: {user_instruction}",
@@ -497,6 +528,57 @@ async def run_agent_loop(
                 "message_key": "common.agent_paused_for_takeover"
             })
             await pm.human_intervention_event.wait()
+
+        # === Drain queued messages from other platforms ===
+        # Handle session_store (QQ, Telegram)
+        if session_store and session_id:
+            queued = session_store.drain_queue_nowait(session_id)
+            if queued:
+                for qmsg in queued:
+                    qtext = qmsg.get("text", "")
+                    qimages = qmsg.get("images", [])
+                    # Add queued message to conversation
+                    messages.append({
+                        "role": "user",
+                        "content": f"[New message from user]: {qtext}"
+                    })
+                    # If there are images, we'll add them to the next observation
+                    if qimages:
+                        for qimg in qimages:
+                            user_content.append({
+                                "type": "image",
+                                "source": {"type": "base64", "media_type": "image/jpeg", "data": qimg.split(",", 1)[-1] if "," in qimg else qimg}
+                            })
+                    messages.append({
+                        "role": "assistant",
+                        "content": "I received your new message. I'll incorporate it into my current task."
+                    })
+
+        # Handle web queue
+        if web_queue_getter and web_session_id:
+            web_queue = web_queue_getter()
+            if web_queue:
+                while not web_queue.empty():
+                    try:
+                        qmsg = web_queue.get_nowait()
+                        qtext = qmsg.get("text", "")
+                        qimages = qmsg.get("images", [])
+                        messages.append({
+                            "role": "user",
+                            "content": f"[New message from user]: {qtext}"
+                        })
+                        if qimages:
+                            for qimg in qimages:
+                                user_content.append({
+                                    "type": "image",
+                                    "source": {"type": "base64", "media_type": "image/jpeg", "data": qimg.split(",", 1)[-1] if "," in qimg else qimg}
+                                })
+                        messages.append({
+                            "role": "assistant",
+                            "content": "I received your new message. I'll incorporate it into my current task."
+                        })
+                    except asyncio.QueueEmpty:
+                        break
 
         # === NEW: Drain background notifications ===
         bg_notifs = await background_manager.drain_notifications()
@@ -671,6 +753,19 @@ async def run_agent_loop(
                         args["old_text"],
                         args["new_text"]
                     )
+
+                elif tool_name == "send_file":
+                    file_path = args["path"]
+                    description = args.get("description", f"File: {file_path}")
+                    # Resolve path relative to workspace
+                    full_path = WORKDIR / file_path
+                    if not full_path.exists():
+                        result_str = f"Error: File not found: {file_path}"
+                    elif not str(full_path.resolve()).startswith(str(WORKDIR.resolve())):
+                        result_str = f"Error: Path escapes workspace: {file_path}"
+                    else:
+                        await ws_send_file(file_path, description)
+                        result_str = f"File sent: {file_path}"
 
                 elif tool_name == "run_bash":
                     result_str = await workspace.run_bash(

@@ -5,6 +5,9 @@ Maps (platform, platform_chat_id) pairs to unified session UUIDs so that
 the same conversation thread is maintained regardless of the originating
 platform.
 
+Also manages message queues for each session to handle incoming messages
+while an agent is running.
+
 Note: This class is asyncio-safe for single-threaded event-loop use.
 Concurrent calls from multiple threads are not supported.
 
@@ -19,8 +22,19 @@ Usage::
 
     # Reverse lookup: find the chat_id for a session
     chat_id = store.get_chat_id("telegram", sid)
+
+    # Message queue for session
+    queue = store.get_queue(sid)
+    await queue.put("new message")
+
+    # Running state
+    if not store.is_running(sid):
+        store.set_running(sid, True)
+        # ... run agent ...
+        store.set_running(sid, False)
 """
 
+import asyncio
 import json
 import uuid
 from pathlib import Path
@@ -31,7 +45,11 @@ _DEFAULT_MAP_FILE = Path("platform_sessions.json")
 
 
 class SessionStore:
-    """Mapping of platform chats to session UUIDs with bidirectional lookup."""
+    """Mapping of platform chats to session UUIDs with bidirectional lookup.
+
+    Also manages per-session message queues and running state for proper
+    handling of incoming messages while an agent is executing.
+    """
 
     def __init__(self, map_file: Optional[Path] = None):
         self._file = map_file or _DEFAULT_MAP_FILE
@@ -39,6 +57,10 @@ class SessionStore:
         self._map: dict[str, str] = {}
         # Reverse map: "(platform, session_uuid)" -> chat_id
         self._reverse: dict[str, str] = {}
+        # Message queues: session_uuid -> asyncio.Queue
+        self._queues: dict[str, asyncio.Queue] = {}
+        # Running state: session_uuids that have an active agent loop
+        self._running: set[str] = set()
         self._load()
 
     # ── Persistence ──────────────────────────────────────────────────────────
@@ -105,11 +127,68 @@ class SessionStore:
         if fwd in self._map:
             session_id = self._map.pop(fwd)
             self._reverse.pop(self._rev_key(platform, session_id), None)
+            # Also clean up queue if exists
+            self._queues.pop(session_id, None)
+            self._running.discard(session_id)
             self._save()
 
     def all_sessions(self) -> dict[str, str]:
         """Return a copy of the full forward mapping dict."""
         return dict(self._map)
+
+    # ── Message Queue API ─────────────────────────────────────────────────────
+
+    def get_queue(self, session_id: str) -> asyncio.Queue:
+        """Get or create the message queue for a session."""
+        if session_id not in self._queues:
+            self._queues[session_id] = asyncio.Queue()
+        return self._queues[session_id]
+
+    def is_running(self, session_id: str) -> bool:
+        """Check if an agent loop is currently running for this session."""
+        return session_id in self._running
+
+    def set_running(self, session_id: str, running: bool) -> None:
+        """Set the running state for a session."""
+        if running:
+            self._running.add(session_id)
+        else:
+            self._running.discard(session_id)
+
+    async def enqueue_message(self, session_id: str, text: str, images: list = None) -> None:
+        """Put a message into the session's queue.
+
+        Parameters
+        ----------
+        session_id:
+            The session UUID.
+        text:
+            Message text content.
+        images:
+            Optional list of image data URLs.
+        """
+        queue = self.get_queue(session_id)
+        await queue.put({
+            "text": text,
+            "images": images or [],
+        })
+
+    def drain_queue_nowait(self, session_id: str) -> list:
+        """Drain all pending messages from the queue (non-blocking).
+
+        Returns a list of {"text": ..., "images": ...} dicts.
+        """
+        queue = self._queues.get(session_id)
+        if queue is None:
+            return []
+
+        messages = []
+        while not queue.empty():
+            try:
+                messages.append(queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return messages
 
 
 # Module-level singleton for convenience

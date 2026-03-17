@@ -4,11 +4,14 @@ platforms/web.py - WebSocket platform adapter for NeoFish.
 Handles the existing browser-based frontend over WebSocket.
 The adapter owns a single WebSocket connection; one WebAdapter instance
 is created per WS connection inside the FastAPI route handler.
+
+Supports message queuing when an agent is already running for a session.
 """
 
 import asyncio
 import base64
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -18,6 +21,8 @@ from fastapi import WebSocket
 from message import UnifiedMessage
 from platforms.base import PlatformAdapter
 
+logger = logging.getLogger(__name__)
+
 # Prefixes used to tag assistant messages that carry structured data.
 _ASSISTANT_MSG_PREFIXES = (
     "[Image] ",
@@ -25,6 +30,12 @@ _ASSISTANT_MSG_PREFIXES = (
     "[Takeover] ",
     "[Takeover Ended] ",
 )
+
+# Module-level state for tracking running sessions and message queues
+# Key: session_id, Value: asyncio.Queue of pending messages
+_web_queues: dict[str, asyncio.Queue] = {}
+# Set of session_ids currently running an agent
+_web_running: set[str] = set()
 
 
 class WebAdapter(PlatformAdapter):
@@ -34,6 +45,9 @@ class WebAdapter(PlatformAdapter):
     One instance is created per active WebSocket connection.  The caller
     (FastAPI route) passes the live WebSocket object and a reference to the
     shared sessions dict so the adapter can persist messages.
+
+    Supports message queuing: if an agent is running and a new message arrives,
+    it's queued and processed in the next agent loop iteration.
 
     Parameters
     ----------
@@ -114,6 +128,56 @@ class WebAdapter(PlatformAdapter):
             f"[Action Required] {reason}",
             image_data=image or "",
         )
+
+    async def send_file(
+        self,
+        session_id: str,
+        file_path: str,
+        description: str = "",
+    ) -> None:
+        """Send a file to the web user."""
+        import base64 as _b64
+
+        try:
+            # Read file and encode to base64
+            with open(file_path, "rb") as f:
+                file_bytes = f.read()
+
+            filename = file_path.split("/")[-1]
+            b64_data = _b64.b64encode(file_bytes).decode()
+
+            # Determine MIME type
+            ext = filename.lower().split(".")[-1] if "." in filename else "bin"
+            mime_types = {
+                "pdf": "application/pdf",
+                "doc": "application/msword",
+                "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "xls": "application/vnd.ms-excel",
+                "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "zip": "application/zip",
+                "txt": "text/plain",
+                "json": "application/json",
+                "csv": "text/csv",
+                "jpg": "image/jpeg",
+                "jpeg": "image/jpeg",
+                "png": "image/png",
+                "gif": "image/gif",
+                "mp4": "video/mp4",
+                "mp3": "audio/mpeg",
+            }
+            mime_type = mime_types.get(ext, "application/octet-stream")
+
+            payload = {
+                "type": "file",
+                "filename": filename,
+                "mime_type": mime_type,
+                "data": b64_data,
+                "description": description,
+            }
+            await self._ws.send_text(json.dumps(payload))
+            self._append_message("assistant", f"[File] {description or filename}")
+        except Exception as e:
+            logger.error("Failed to send file to web user: %s", e)
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -247,6 +311,22 @@ class WebAdapter(PlatformAdapter):
         user_msg: str = payload.get("message", "")
         user_images: list = payload.get("images", [])
 
+        # If agent is already running for this session, queue the message
+        if self._session_id in _web_running:
+            if self._session_id not in _web_queues:
+                _web_queues[self._session_id] = asyncio.Queue()
+            await _web_queues[self._session_id].put({
+                "text": user_msg,
+                "images": user_images,
+            })
+            # Inform the user
+            await self._ws.send_text(json.dumps({
+                "type": "info",
+                "message": "Message queued (agent is busy).",
+                "message_key": "common.message_queued",
+            }))
+            return
+
         # Save uploaded images to workspace and collect paths
         saved_paths: list = []
         for i, data_url in enumerate(user_images):
@@ -287,13 +367,25 @@ class WebAdapter(PlatformAdapter):
             self._append_message("assistant", human_text)
             await self._ws.send_text(json.dumps(packet))
 
-        asyncio.create_task(self._run_agent(
-            self._pm,
-            user_msg,
-            _ws_send_msg,
-            lambda reason, img: self.request_action(self._session_id, reason, img),
-            self._send_image,
-            images=user_images,
-            history_messages=history,
-            uploaded_files=saved_paths,
-        ))
+        # Mark as running
+        _web_running.add(self._session_id)
+
+        async def _run_with_queue():
+            try:
+                await self._run_agent(
+                    self._pm,
+                    user_msg,
+                    _ws_send_msg,
+                    lambda reason, img: self.request_action(self._session_id, reason, img),
+                    self._send_image,
+                    lambda path, desc: self.send_file(self._session_id, path, desc),
+                    images=user_images,
+                    history_messages=history,
+                    uploaded_files=saved_paths,
+                    web_queue_getter=lambda: _web_queues.get(self._session_id),
+                    web_session_id=self._session_id,
+                )
+            finally:
+                _web_running.discard(self._session_id)
+
+        asyncio.create_task(_run_with_queue())

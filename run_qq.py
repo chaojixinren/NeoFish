@@ -40,12 +40,13 @@ async def main():
     from playwright_manager import PlaywrightManager
     from session import session_store
     from _agent_runner import make_message_handler
+    from config import WORKDIR
 
     pm = PlaywrightManager()
     await pm.start()
 
     adapter = QQAdapter(session_store=session_store)
-    adapter.on_message = make_message_handler(adapter, pm)
+    adapter.on_message = make_message_handler(adapter, pm, session_store, WORKDIR)
 
     logger.info("Starting NeoFish QQ bot…")
     await adapter.start()

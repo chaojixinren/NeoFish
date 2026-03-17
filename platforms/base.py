@@ -78,3 +78,23 @@ class PlatformAdapter(ABC):
         image:
             Optional base64-encoded screenshot providing context.
         """
+
+    @abstractmethod
+    async def send_file(
+        self,
+        session_id: str,
+        file_path: str,
+        description: str = "",
+    ) -> None:
+        """
+        Send a file to the user.
+
+        Parameters
+        ----------
+        session_id:
+            Unified session UUID.
+        file_path:
+            Path to the file relative to workspace.
+        description:
+            Optional description of the file.
+        """
