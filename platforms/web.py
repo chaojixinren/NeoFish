@@ -303,31 +303,40 @@ class WebAdapter(PlatformAdapter):
     async def _handle_stop_task(self) -> None:
         success = await task_manager.stop_task(self._session_id)
         if success:
+            message = "Task stopped."
+            message_key = "common.task_stopped"
             await self._send_packet(
                 {
                     "type": "info",
-                    "message": "Task stopped.",
-                    "message_key": "common.task_stopped",
+                    "message": message,
+                    "message_key": message_key,
                 }
             )
+            self._append_message("assistant", message, message_key=message_key)
         else:
+            message = "No running task to stop."
+            message_key = "common.no_task_to_stop"
             await self._send_packet(
                 {
                     "type": "info",
-                    "message": "No running task to stop.",
-                    "message_key": "common.no_task_to_stop",
+                    "message": message,
+                    "message_key": message_key,
                 }
             )
+            self._append_message("assistant", message, message_key=message_key)
 
     async def _handle_resume(self) -> None:
         self._pm.signal_resume(self._session_id)
+        message = "Agent resumed execution."
+        message_key = "common.agent_resumed"
         await self._send_packet(
             {
                 "type": "info",
-                "message": "Agent resumed execution.",
-                "message_key": "common.agent_resumed",
+                "message": message,
+                "message_key": message_key,
             }
         )
+        self._append_message("assistant", message, message_key=message_key)
 
     async def _handle_takeover(self) -> None:
         if self._pm.in_takeover:
