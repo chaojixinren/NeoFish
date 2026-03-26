@@ -8,7 +8,7 @@ from anthropic import AsyncAnthropic
 from playwright_manager import PlaywrightManager
 from workspace_manager import WorkspaceManager
 from task_manager import TaskManager
-from background_manager import BackgroundManager
+from background_manager import background_manager
 
 load_dotenv()
 
@@ -27,7 +27,6 @@ KEEP_RECENT = 3  # For microcompact
 # Initialize managers
 workspace = WorkspaceManager(WORKDIR, strict=False)
 task_manager = TaskManager()
-background_manager = BackgroundManager(WORKDIR)
 
 SYSTEM_PROMPT = """You are NeoFish, an autonomous agent that can:
 1. **Browse the web** - Navigate, click, type, extract information

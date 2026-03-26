@@ -11,6 +11,7 @@ from fastapi import WebSocket
 from message import UnifiedMessage
 from platforms.base import PlatformAdapter
 from agent_task_manager import task_manager
+from background_manager import background_manager
 
 logger = logging.getLogger(__name__)
 
@@ -301,18 +302,34 @@ class WebAdapter(PlatformAdapter):
             await self._handle_user_input(payload)
 
     async def _handle_stop_task(self) -> None:
-        success = await task_manager.stop_task(self._session_id)
+        task_stopped = await task_manager.stop_task(self._session_id)
+        background_cancelled = await background_manager.cancel_by_session(
+            self._session_id
+        )
+        success = task_stopped or background_cancelled > 0
+
         if success:
-            message = "Task stopped."
-            message_key = "common.task_stopped"
+            if task_stopped and background_cancelled > 0:
+                message = (
+                    f"Task stopped. Cancelled {background_cancelled} background task(s)."
+                )
+                message_key = ""
+            elif background_cancelled > 0:
+                message = f"Cancelled {background_cancelled} background task(s)."
+                message_key = ""
+            else:
+                message = "Task stopped."
+                message_key = "common.task_stopped"
             await self._send_packet(
                 {
                     "type": "info",
                     "message": message,
-                    "message_key": message_key,
+                    **({"message_key": message_key} if message_key else {}),
                 }
             )
-            self._append_message("assistant", message, message_key=message_key)
+            self._append_message(
+                "assistant", message, message_key=message_key or ""
+            )
         else:
             message = "No running task to stop."
             message_key = "common.no_task_to_stop"
