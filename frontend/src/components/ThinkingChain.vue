@@ -48,7 +48,10 @@ function toggle() {
         <Brain :size="14" />
       </div>
       
-      <span class="theme-text-secondary flex-1 truncate text-sm">
+      <span
+        class="flex-1 truncate text-sm"
+        :class="isActive ? 'shimmer-title' : 'theme-text-secondary'"
+      >
         {{ summaryText }}
       </span>
       
@@ -83,3 +86,30 @@ function toggle() {
     </Transition>
   </div>
 </template>
+
+<style scoped>
+.shimmer-title {
+  background: linear-gradient(
+    90deg,
+    var(--text-secondary, #6b7280) 0%,
+    var(--text-secondary, #6b7280) 35%,
+    var(--accent-color, #3b82f6) 50%,
+    var(--text-secondary, #6b7280) 65%,
+    var(--text-secondary, #6b7280) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 2s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+</style>
