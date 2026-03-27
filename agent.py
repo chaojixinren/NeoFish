@@ -486,16 +486,27 @@ async def auto_compact(messages: list, focus: str = None) -> list:
         for msg in messages:
             f.write(json.dumps(msg, default=str, ensure_ascii=False) + "\n")
 
+    # Get current task state for context
+    task_summary = task_manager.list_all()
+
     # Build summary prompt
     conversation_text = json.dumps(messages, default=str, ensure_ascii=False)[:80000]
     focus_text = f"\n\nFocus on preserving: {focus}" if focus else ""
 
     summary_prompt = (
-        "Summarize this conversation for continuity. Include:\n"
-        "1) What was accomplished\n"
-        "2) Current state and pending tasks\n"
-        "3) Key decisions and important context\n"
-        "Be concise but preserve critical details.\n"
+        "Summarize this conversation for continuity. CRITICAL - YOU MUST:\n\n"
+        "1) **EXACT Original User Request** - Quote the user's original request verbatim. "
+        "This is THE MOST IMPORTANT thing. Never forget or modify this.\n\n"
+        "2) **Completed Work Checklist** - List each item that has been DONE. "
+        "Mark as [DONE]. These MUST NOT be repeated.\n\n"
+        "3) **Remaining Work Checklist** - List items still pending. Mark as [TODO]. "
+        "This is what you should continue with.\n\n"
+        "4) **Current Position** - Where exactly are you now? (URL, file being edited, step number, etc.)\n\n"
+        "5) **Key Context** - URLs visited, files created/modified, important data extracted.\n\n"
+        "Current task system state:\n"
+        f"{task_summary}\n\n"
+        "WARNING: After compression, DO NOT restart from the beginning. "
+        "Continue from where you left off. Items marked [DONE] should NOT be repeated.\n"
         f"{focus_text}\n\n{conversation_text}"
     )
 
@@ -520,16 +531,21 @@ async def auto_compact(messages: list, focus: str = None) -> list:
             "role": "user",
             "content": (
                 f"[Conversation compressed. Full transcript: {transcript_path}]\n\n"
-                f"## Important Reminders:\n"
-                f"- Your workspace directory is: {WORKDIR}\n"
-                f"- ALL file operations must be relative to this directory\n"
-                f"- Use `send_file` to send files to the user\n\n"
+                f"## CRITICAL INSTRUCTIONS:\n"
+                f"- DO NOT restart from the beginning\n"
+                f"- DO NOT repeat any work marked as [DONE] in the summary\n"
+                f"- Continue from the current position described in the summary\n"
+                f"- Your workspace directory is: {WORKDIR}\n\n"
                 f"## Summary:\n{summary}"
             ),
         },
         {
             "role": "assistant",
-            "content": "Understood. I have the context from the summary. Continuing.",
+            "content": (
+                "I understand. I will NOT restart from the beginning. "
+                "I will continue from where we left off, skipping any [DONE] items. "
+                "Proceeding with the remaining [TODO] items."
+            ),
         },
     ]
 
