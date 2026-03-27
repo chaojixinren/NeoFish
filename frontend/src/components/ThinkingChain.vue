@@ -66,7 +66,7 @@ function toggle() {
       enter-from-class="opacity-0 max-h-0"
       leave-to-class="opacity-0 max-h-0"
     >
-      <div v-if="expanded" class="overflow-hidden border-t" style="max-height: 400px; border-color: var(--border-muted);">
+      <div v-if="expanded" class="overflow-y-auto border-t" style="max-height: 400px; border-color: var(--border-muted);">
         <div class="px-4 py-3 space-y-2">
           <div
             v-for="(step, idx) in steps"
